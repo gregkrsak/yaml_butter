@@ -10,7 +10,7 @@
 | Directives/doc markers           | ❌ Missing   | `---`, `...`            |   |
 | Tags (`!!str`, `!custom`)        | ❌ Missing   |                         |   |
 | Number formats/underscores       | ❌ Missing   | `1_000`, `0xFF`, `.nan` |   |
-| Block scalar chomping (\`        | +`, `>-\`)  | ❌ Missing               |   |
+| Block scalar chomping (`\|+`\, `>-`)  | ❌ Missing               |   |
 | Multi-document stream            | ❌ Missing   |                         |   |
 | Anchor/alias cycle detection     | ❌ Missing   |                         |   |
 | Unicode escapes                  | ❌ Missing   |                         |   |
