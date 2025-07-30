@@ -1,0 +1,21 @@
+defaults: &defaults
+  retries: 5
+  timeout: 10
+  greeting: |
+    Hello Greg,
+    This is a multi-line literal scalar.
+  note: >
+    This is a folded
+    multi-line string, which YAML will turn
+    into a single line.
+
+server1:
+  <<: *defaults
+  host: example.com
+
+list: &mylist
+  - item1
+  - item2
+  - item3
+
+copy_of_list: *mylist
