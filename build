@@ -1,1 +1,2 @@
+#!/usr/bin/env bash
 g++ -Os -std=c++23 test_yaml_butter.cpp -o test_yaml_butter
