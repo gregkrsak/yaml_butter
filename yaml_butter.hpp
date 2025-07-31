@@ -1,6 +1,6 @@
 /**
  * @file yaml_butter.hpp
- * @brief Single-header YAML parser for C++23 with full block and flow style support.
+ * @brief A modern YAML parser for C++23.
  *
  * This header-only YAML parser supports:
  *   - Block-style Mappings (dictionary/object), Sequences (array/list), and Scalars (string, int, double, bool, null)
@@ -9,7 +9,7 @@
  *   - Multi-line scalars (literal '|' and folded '>')
  *   - Anchors and aliases (&anchor, *alias) for mappings, sequences, and scalars
  *   - Merge keys (`<<: *anchor`) for mappings
- *   - YAML 1.2 Type Tags (e.g., !!str, !!int, !!bool, !!float, !CustomType)
+ *   - Type Tags (e.g., !!str, !!int, !!bool, !!float, !CustomType)
  *
  * Usage Example:
  * @code
