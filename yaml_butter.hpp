@@ -9,6 +9,7 @@
  *   - Multi-line scalars (literal '|' and folded '>')
  *   - Anchors and aliases (&anchor, *alias) for mappings, sequences, and scalars
  *   - Merge keys (`<<: *anchor`) for mappings
+ *   - YAML 1.2 Type Tags (e.g., !!str, !!int, !!bool, !!float, !CustomType)
  *
  * Usage Example:
  * @code
@@ -39,6 +40,7 @@
 #include <optional>
 #include <charconv>
 #include <algorithm>
+#include <utility>
 
 namespace YAML {
 
@@ -48,6 +50,8 @@ namespace YAML {
  *
  * This is the primary data structure used to represent all values loaded from YAML files.
  * Each YAML node (mapping, sequence, scalar) is dynamically typed at runtime.
+ *
+ * With Type Tag support, each Node may now also store an associated tag (or empty string if not tagged).
  */
 class Node {
 public:
@@ -77,28 +81,37 @@ public:
     >;
 
     /** @brief Construct a Null node by default. */
-    Node() noexcept : kind_(Kind::Null), value_(std::monostate{}) {}
+    Node() noexcept : kind_(Kind::Null), value_(std::monostate{}), tag_() {}
 
     /** @brief Construct a Bool node. */
-    Node(bool b) noexcept : kind_(Kind::Bool), value_(b) {}
+    Node(bool b) noexcept : kind_(Kind::Bool), value_(b), tag_() {}
 
     /** @brief Construct an Int node. */
-    Node(int64_t i) noexcept : kind_(Kind::Int), value_(i) {}
+    Node(int64_t i) noexcept : kind_(Kind::Int), value_(i), tag_() {}
 
     /** @brief Construct a Double node. */
-    Node(double d) noexcept : kind_(Kind::Double), value_(d) {}
+    Node(double d) noexcept : kind_(Kind::Double), value_(d), tag_() {}
 
     /** @brief Construct a String node from std::string. */
-    Node(std::string s) noexcept : kind_(Kind::String), value_(std::move(s)) {}
+    Node(std::string s) noexcept : kind_(Kind::String), value_(std::move(s)), tag_() {}
 
     /** @brief Construct a String node from a C-string. */
-    Node(const char* s) : kind_(Kind::String), value_(std::string(s)) {}
+    Node(const char* s) : kind_(Kind::String), value_(std::string(s)), tag_() {}
 
     /** @brief Construct a Sequence node. */
-    Node(std::vector<Node> seq) noexcept : kind_(Kind::Sequence), value_(std::move(seq)) {}
+    Node(std::vector<Node> seq) noexcept : kind_(Kind::Sequence), value_(std::move(seq)), tag_() {}
 
     /** @brief Construct a Mapping node. */
-    Node(std::map<std::string, Node> map) noexcept : kind_(Kind::Mapping), value_(std::move(map)) {}
+    Node(std::map<std::string, Node> map) noexcept : kind_(Kind::Mapping), value_(std::move(map)), tag_() {}
+
+    /**
+     * @brief Construct a node of any kind, with an explicit type tag.
+     * @param kind The Kind for the node.
+     * @param value The variant value for the node.
+     * @param tag The YAML type tag, e.g. "!!str", "!CustomTag", etc.
+     */
+    Node(Kind kind, Value value, std::string tag)
+        : kind_(kind), value_(std::move(value)), tag_(std::move(tag)) {}
 
     /** @brief Returns the runtime kind (type) of this node. */
     Kind Type()    const noexcept { return kind_; }
@@ -150,7 +163,7 @@ public:
 
     /** @brief Access sequence node by index (mutable). Throws if not a sequence. */
     Node& operator[](size_t idx) {
-        return std::get<std::vector<Node>>(AssertKind(Kind::Sequence)).at(idx);
+        return std::get<std::vector<Node>>(AssertKind(Kind::Sequence))[idx];
     }
 
     /**
@@ -160,6 +173,18 @@ public:
      */
     template<typename T>
     std::optional<T> TryAs() const;
+
+    /**
+     * @brief Get the YAML tag for this node (e.g., `!!str`, `!!int`, `!MyTag`), or an empty string if none.
+     */
+    const std::string& Tag() const noexcept { return tag_; }
+
+    /**
+     * @brief Set the YAML tag for this node (for parser internal use only).
+     * @param tag The tag string, e.g., "!!str", "!CustomType".
+     *        Used by the parser for type tags; not intended for user mutation except in custom loaders.
+     */
+    void SetTag(std::string tag) { tag_ = std::move(tag); }
 
 private:
     /**
@@ -203,6 +228,7 @@ private:
 
     Kind   kind_;   ///< The current type of this node.
     Value  value_;  ///< The value stored for this node.
+    std::string tag_; ///< The YAML type tag (e.g., `!!str`, `!!int`, `!CustomTag`), or empty if untagged.
 };
 
 /// @cond INTERNAL
@@ -242,6 +268,8 @@ template<> inline std::optional<std::string> Node::TryAs<std::string>() const {
  *
  * This is a single-use parsing engine: constructed on a YAML input, and used to produce a `Node` representing the document.
  * Not thread-safe, but can be called concurrently on different documents/files.
+ * 
+ * Now supports full YAML 1.2 Type Tags for scalars, sequences, and mappings. The tag is attached to the Node and is accessible.
  */
 class Parser {
 public:
@@ -303,6 +331,31 @@ private:
     }
 
     /**
+     * @brief Extract a YAML type tag (if present) and return both tag and the rest of the string.
+     * @param s The input string to search for a tag.
+     * @return {tag string (or ""), rest of line after tag}.
+     * @note YAML tags can be !!int, !!str, !!bool, !!float, !CustomTag, etc.
+     */
+    static std::pair<std::string, std::string_view> parseTag(std::string_view s) {
+        size_t pos = 0;
+        while (pos < s.size() && std::isspace((unsigned char)s[pos])) ++pos;
+        if (pos >= s.size() || s[pos] != '!') return {"", s};
+        size_t start = pos;
+        // Accept !!, !, !foo, !!str, etc.
+        ++pos;
+        if (pos < s.size() && s[pos] == '!') ++pos;
+        while (pos < s.size() &&
+               (std::isalnum((unsigned char)s[pos]) || s[pos] == '_' || s[pos] == '-' || s[pos] == '.'))
+            ++pos;
+        // Custom tags may be more complex, but this is 99% of real use.
+        std::string tag(s.substr(start, pos - start));
+        // Skip whitespace after tag
+        size_t ws = pos;
+        while (ws < s.size() && std::isspace((unsigned char)s[ws])) ++ws;
+        return {tag, s.substr(ws)};
+    }
+
+    /**
      * @brief Dispatch block parsing logic based on indentation and line contents.
      *        Handles block-style, flow-style, and sequence nodes at the root or sub-blocks.
      * @param base_indent The indentation level this block expects.
@@ -336,7 +389,7 @@ private:
      * @param s The input string to search for an anchor in.
      * @return {anchor name (or ""), rest of line after anchor}.
      *
-     * If no anchor is present, returns {"", s}.
+     * If no anchor is present, returns {"",s}.
      */
     static std::pair<std::string,std::string_view> parseAnchor(std::string_view s) {
         auto pos = s.find('&');
@@ -367,6 +420,7 @@ private:
      * @brief Parse a block-style YAML mapping (dictionary/object) at a given indent.
      *
      * Handles anchors, aliases, merge keys (<<: *anchor), and both block/flow-style values.
+     * Also supports YAML type tags for both keys and values, storing the tag in the Node.
      *
      * @param base_indent The indentation level expected for this mapping block.
      * @return A Node of kind Mapping with all keys/values parsed.
@@ -378,29 +432,35 @@ private:
             auto pos = li.content.find(':');
             if (pos == std::string::npos)
                 throw std::runtime_error("YAML: missing ':' at line "+std::to_string(li.line_no));
-            // Parse key and possible key anchor
+            // Parse key and possible key anchor/tag
             auto keyv = Trim(li.content.substr(0,pos));
-            auto [kanchor, kbase] = parseAnchor(keyv);
-            std::string key(kbase);
-            // Parse possible anchor/value for this value
+            auto [ktag, kbase1] = parseTag(keyv);
+            auto [kanchor, kbase2] = parseAnchor(kbase1);
+            std::string key(kbase2);
+
+            // Parse possible tag/anchor/value for this value
             auto rest = li.content.substr(pos+1);
             size_t sp=0; while(sp<rest.size()&&rest[sp]==' ')++sp;
             rest = rest.substr(sp);
-            auto [vanchor, vrem] = parseAnchor(rest);
+
+            auto [vtag, vrem1] = parseTag(rest);
+            auto [vanchor, vrem2] = parseAnchor(vrem1);
             std::string val_anchor = vanchor;
-            std::string_view content = vrem;
+            std::string_view content = vrem2;
 
             Node val;
             // Case 1: Multi-line scalar value (| or >) as value
             if (content == "|" || content == ">") {
                 char t = content[0]; ++cur_;
                 val = ParseMultilineScalar(li.indent+2, t);
+                if (!vtag.empty()) val.SetTag(vtag);
             }
             // Case 2: Alias or merge key
             else if (auto [a, ia] = parseAlias(content); ia) {
                 if (!anchors_.count(a))
                     throw std::runtime_error("YAML: undefined alias '*"+a+"' at line "+std::to_string(li.line_no));
                 val = anchors_[a];
+                if (!vtag.empty()) val.SetTag(vtag);
                 if (key=="<<") {
                     // Merge mapping into current map
                     if (!val.IsMapping())
@@ -413,10 +473,12 @@ private:
             // Case 3: Flow-style mapping or sequence as value
             else if (content.starts_with('{')) {
                 val = ParseFlowMapping(content.substr(1, content.size()-2));
+                if (!vtag.empty()) val.SetTag(vtag);
                 ++cur_;
             }
             else if (content.starts_with('[')) {
                 val = ParseFlowSequence(content.substr(1, content.size()-2));
+                if (!vtag.empty()) val.SetTag(vtag);
                 ++cur_;
             }
             // Case 4: Nested block mapping or empty/null value
@@ -426,11 +488,12 @@ private:
                     val = ParseBlock(li.indent+2);
                 else
                     val = Node();
+                if (!vtag.empty()) val.SetTag(vtag);
             }
-            // Case 5: Plain scalar value
+            // Case 5: Plain scalar value (may have tag)
             else {
                 ++cur_;
-                val = ParseScalar(content);
+                val = ParseScalar(content, vtag);
             }
 
             // Anchor management: allow anchors on keys and values
@@ -445,6 +508,7 @@ private:
      * @brief Parse a block-style YAML sequence (array/list) at a given indent.
      *
      * Handles anchors, aliases, multi-line and flow-style elements, and nested blocks.
+     * Also supports YAML type tags for elements, storing the tag in the Node.
      *
      * @param base_indent The indentation level expected for this sequence block.
      * @return A Node of kind Sequence containing all parsed elements.
@@ -459,41 +523,48 @@ private:
             auto rest = li.content.substr(1);
             size_t sp=0; while(sp<rest.size()&&rest[sp]==' ')++sp;
             rest = rest.substr(sp);
-            auto [anchor, rem] = parseAnchor(rest);
-            std::string elt_anchor = anchor;
-            std::string_view content = rem;
+
+            auto [etag, erem1] = parseTag(rest);
+            auto [eanchor, erem2] = parseAnchor(erem1);
+            std::string elt_anchor = eanchor;
+            std::string_view content = erem2;
 
             Node elt;
             // Nested block sequence element
             if (content.empty()) {
                 ++cur_;
                 elt = ParseBlock(li.indent+2);
+                if (!etag.empty()) elt.SetTag(etag);
             }
             // Multi-line scalar as element
             else if (content == "|" || content == ">") {
                 char t = content[0]; ++cur_;
                 elt = ParseMultilineScalar(li.indent+2, t);
+                if (!etag.empty()) elt.SetTag(etag);
             }
             // Alias reference as element
             else if (auto [a, ia] = parseAlias(content); ia) {
                 if (!anchors_.count(a))
                     throw std::runtime_error("YAML: undefined alias '*"+a+"' in sequence");
                 elt = anchors_[a];
+                if (!etag.empty()) elt.SetTag(etag);
                 ++cur_;
             }
             // Flow-style mapping or sequence as element
             else if (content.starts_with('{')) {
                 elt = ParseFlowMapping(content.substr(1, content.size()-2));
+                if (!etag.empty()) elt.SetTag(etag);
                 ++cur_;
             }
             else if (content.starts_with('[')) {
                 elt = ParseFlowSequence(content.substr(1, content.size()-2));
+                if (!etag.empty()) elt.SetTag(etag);
                 ++cur_;
             }
             // Scalar element
             else {
                 ++cur_;
-                elt = ParseScalar(content);
+                elt = ParseScalar(content, etag);
             }
 
             // Store anchors for sequence elements, if present
@@ -529,13 +600,64 @@ private:
     }
 
     /**
-     * @brief Parse a single-line YAML scalar, which may be null, bool, int, double, quoted, or plain.
+     * @brief Parse a single-line YAML scalar, which may be null, bool, int, double, quoted, or plain, with possible tag override.
+     * 
+     * If a tag is given (e.g., !!str, !!int, !!bool, !!float), this will force the node to be of the given kind.
+     * For custom tags (e.g., !MyTag), the value is parsed as a string and the tag is stored in the node.
+     * If no tag is provided, normal YAML type inference is used.
      *
-     * This function is robust to YAML’s flexible scalar syntax.
      * @param s The string to parse as a scalar.
-     * @return A Node of scalar kind (Null, Bool, Int, Double, or String).
+     * @param tag The tag to use for this scalar, or empty for normal inference.
+     * @return A Node of scalar kind (Null, Bool, Int, Double, or String) with the tag attached.
      */
-    static Node ParseScalar(std::string_view s) {
+    static Node ParseScalar(std::string_view s, const std::string& tag = "") {
+        // If tag is present, override type as specified
+        if (!tag.empty()) {
+            // Built-in YAML 1.2 tags
+            if (tag == "!!null") return Node(Node::Kind::Null, std::monostate{}, tag);
+            if (tag == "!!bool") {
+                // Remove quotes if present
+                if ((s.starts_with('"') && s.ends_with('"')) ||
+                    (s.starts_with('\'') && s.ends_with('\'')))
+                    s = s.substr(1, s.size()-2);
+                if (s=="true"||s=="True"||s=="TRUE")   return Node(Node::Kind::Bool, true, tag);
+                if (s=="false"||s=="False"||s=="FALSE")return Node(Node::Kind::Bool, false, tag);
+                throw std::runtime_error("YAML: invalid !!bool value: "+std::string(s));
+            }
+            if (tag == "!!int") {
+                // Remove quotes if present
+                if ((s.starts_with('"') && s.ends_with('"')) ||
+                    (s.starts_with('\'') && s.ends_with('\'')))
+                    s = s.substr(1, s.size()-2);
+                int64_t i=0;
+                if (auto [p,ec] = std::from_chars(s.data(),s.data()+s.size(),i);
+                    ec==std::errc() && p==s.data()+s.size())
+                    return Node(Node::Kind::Int, i, tag);
+                throw std::runtime_error("YAML: invalid !!int value: "+std::string(s));
+            }
+            if (tag == "!!float") {
+                // Remove quotes if present
+                if ((s.starts_with('"') && s.ends_with('"')) ||
+                    (s.starts_with('\'') && s.ends_with('\'')))
+                    s = s.substr(1, s.size()-2);
+                double d=0;
+                if (auto [p2,ec2] = std::from_chars(s.data(),s.data()+s.size(),d);
+                    ec2==std::errc() && p2==s.data()+s.size())
+                    return Node(Node::Kind::Double, d, tag);
+                throw std::runtime_error("YAML: invalid !!float value: "+std::string(s));
+            }
+            if (tag == "!!str") {
+                // Remove quotes if present
+                if ((s.starts_with('"') && s.ends_with('"')) ||
+                    (s.starts_with('\'') && s.ends_with('\'')))
+                    s = s.substr(1, s.size()-2);
+                return Node(Node::Kind::String, std::string(s), tag);
+            }
+            // For custom tags (e.g., !MyTag), treat as string and record tag
+            if (tag.starts_with('!'))
+                return Node(Node::Kind::String, std::string(s), tag);
+        }
+
         // Null scalars (various YAML spellings)
         if (s=="~"||s=="null"||s=="Null"||s=="NULL")     return Node();
         // Boolean scalars (various spellings)
@@ -574,7 +696,8 @@ private:
 
     /**
      * @brief Parse a YAML flow-style sequence ([a, b, c]).
-     *        Handles nesting, strings, numbers, and booleans.
+     *        Handles nesting, strings, numbers, and booleans. 
+     *        Also supports type tags for flow elements (rare but legal).
      * @param s Contents between [ and ] (not including brackets themselves).
      * @return Node of kind Sequence.
      */
@@ -597,12 +720,14 @@ private:
                 ++i;
             }
             auto tok = Trim(s.substr(start,i-start));
-            if (tok.starts_with('['))
-                seq.push_back(ParseFlowSequence(tok.substr(1,tok.size()-2)));
-            else if (tok.starts_with('{'))
-                seq.push_back(ParseFlowMapping(tok.substr(1,tok.size()-2)));
+            // Support type tags at start of each flow element
+            auto [tag, rest] = parseTag(tok);
+            if (rest.starts_with('['))
+                seq.push_back(ParseFlowSequence(rest.substr(1,rest.size()-2)));
+            else if (rest.starts_with('{'))
+                seq.push_back(ParseFlowMapping(rest.substr(1,rest.size()-2)));
             else
-                seq.push_back(ParseScalar(tok));
+                seq.push_back(ParseScalar(rest, tag));
             while (i<s.size()&&(s[i]==','||std::isspace((unsigned char)s[i]))) ++i;
         }
         return Node(std::move(seq));
@@ -611,6 +736,7 @@ private:
     /**
      * @brief Parse a YAML flow-style mapping ({foo: 1, bar: 2}).
      *        Handles nested flow structures, booleans, numbers, and quoted strings.
+     *        Also supports type tags for flow values (rare but legal).
      * @param s Contents between { and } (not including braces themselves).
      * @return Node of kind Mapping.
      */
@@ -637,12 +763,14 @@ private:
                 ++i;
             }
             auto val = Trim(s.substr(start,i-start));
-            if (val.starts_with('['))
-                map[std::string(key)] = ParseFlowSequence(val.substr(1,val.size()-2));
-            else if (val.starts_with('{'))
-                map[std::string(key)] = ParseFlowMapping(val.substr(1,val.size()-2));
+            // Support type tags for flow values
+            auto [tag, rest] = parseTag(val);
+            if (rest.starts_with('['))
+                map[std::string(key)] = ParseFlowSequence(rest.substr(1,rest.size()-2));
+            else if (rest.starts_with('{'))
+                map[std::string(key)] = ParseFlowMapping(rest.substr(1,rest.size()-2));
             else
-                map[std::string(key)] = ParseScalar(val);
+                map[std::string(key)] = ParseScalar(rest, tag);
             while (i<s.size()&&(s[i]==','||std::isspace((unsigned char)s[i]))) ++i;
         }
         return Node(std::move(map));

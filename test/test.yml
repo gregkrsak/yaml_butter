@@ -1,69 +1,69 @@
-# Comprehensive YAML feature test for yaml_butter.hpp
+# Comprehensive YAML feature test for yaml_butter.hpp with tags
 
 # 1. Block‐style mapping with anchors, multi‐line scalars, and merge keys
 defaults: &defaults
-  int_val: 123
-  float_val: 45.67
-  bool_true: true
-  bool_false: false
-  plain_str: plainString
-  quoted_str: "a quoted string"
-  literal_scalar: |
+  int_val: !!int "123"
+  float_val: !!float "45.67"
+  bool_true: !!bool "true"
+  bool_false: !!bool "false"
+  plain_str: !!str plainString
+  quoted_str: !!str "a quoted string"
+  literal_scalar: !!str |
     Line1 of literal
     Line2 of literal
-  folded_scalar: >
+  folded_scalar: !!str >
     This is a folded
     scalar that becomes
     one line.
 block_map:
   <<: *defaults
-  extra_key: extraValue
+  extra_key: !CustomType extraValue
 
 # 2. Block‐style sequence with anchors, aliases, and nested blocks
 block_seq: &bseq
-  - first
-  - second
-  - |
-    multi
-    line
-    item
-  - >
-    folded
-    sequence
+  - !!str first
+  - !!str second
+  - !!str |
+      multi
+      line
+      item
+  - !!str >
+      folded
+      sequence
 copy_block_seq: *bseq
 
 # 3. Flow‐style sequence and mapping at value positions
-flow_seq: [alpha, beta, gamma, 4, true, false]
-flow_map: { x: 1, y: 2.5, z: "zip", nested_map: { a: "A", b: 2 }, nested_seq: [one, two] }
+flow_seq: [!!str alpha, !!str beta, !!str gamma, !!int 4, !!bool true, !!bool false]
+flow_map: { x: !!int 1, y: !!float 2.5, z: !!str "zip", nested_map: { a: !!str "A", b: !!int 2 }, nested_seq: [!!str one, !!str two] }
 
 # 4. Anchors & aliases in flow context
-flow_map_anchor: &fmap { k1: v1, k2: v2 }
+flow_map_anchor: &fmap { k1: !!str v1, k2: !!str v2 }
 copy_flow_map: *fmap
-flow_seq_anchor: &fseq [10, 20, 30]
+flow_seq_anchor: &fseq [!!int 10, !!int 20, !!int 30]
 copy_flow_seq: *fseq
 
 # 5. Mixed block‐in‐flow and flow‐in‐block
 mixed_values:
-  flow_inside: [x, y, z]
-  map_inside: { inner1: 100, inner2: 200 }
+  flow_inside: [!!str x, !!str y, !!str z]
+  map_inside: { inner1: !!int 100, inner2: !!int 200 }
   block_inside:
-    subkey1: subval1
-    subkey2: subval2
+    subkey1: !!str subval1
+    subkey2: !!str subval2
 
 # 6. Sequence of flow mappings
 seq_of_flow_maps:
-  - { a: 1, b: 2 }
-  - { c: 3, d: 4 }
+  - { a: !!int 1, b: !!int 2 }
+  - { c: !!int 3, d: !!int 4, e: !SpecialTag custom_val }
 
 # 7. Nested anchors and merge inside sequence
 seq_merge_block:
   <<: *defaults
   items:
     - *fseq
-    - [5, 6, 7]
-    - &inner_map { im1: 100, im2: 200 }
+    - [!!int 5, !!int 6, !!int 7]
+    - &inner_map { im1: !!int 100, im2: !!int 200 }
   merged_inner: *inner_map
 
 # 8. Root‐level flow mapping and sequence to test ParseBlock dispatch
-root_flow_seq: [100, 200, 300]
-root_flow_map: { rm1: rv1, rm2: rv2 }
+root_flow_seq: [!!int 100, !!int 200, !!int 300]
+root_flow_map: { rm1: !!str rv1, rm2: !!str rv2 }
