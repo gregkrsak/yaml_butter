@@ -4,7 +4,7 @@
 | Scalar typing (null, bool, num)  | ✔ Supported |                         |   |
 | Multi-line literal/folded scalar | ✔ Supported |                         |   |
 | Anchors, aliases, merge          | ✔ Supported |                         |   |
-| Flow-style map/seq               | ❌ Missing   | `{}`, `[]`              |   |
+| Flow-style map/seq               | ✔ Supported | `{}`, `[]`              |   |
 | Quoted string escapes            | ❌ Missing   |                         |   |
 | Inline comments                  | ❌ Missing   |                         |   |
 | Directives/doc markers           | ❌ Missing   | `---`, `...`            |   |

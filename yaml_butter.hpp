@@ -1,13 +1,14 @@
 /**
  * @file yaml_butter.hpp
- * @brief Single-header YAML parser for C++23 with anchors, aliases, merge keys, and multi-line scalars.
+ * @brief Single-header YAML parser for C++23 with full block and flow style support.
  *
  * This header-only YAML parser supports:
  *   - Block-style Mappings (dictionary/object), Sequences (array/list), and Scalars (string, int, double, bool, null)
+ *   - Flow-style Mappings (`{a:1, b:2}`) and Sequences (`[x,y,z]`)
  *   - Indentation-based parsing (block style YAML)
  *   - Multi-line scalars (literal '|' and folded '>')
  *   - Anchors and aliases (&anchor, *alias) for mappings, sequences, and scalars
- *   - Merge keys (<<: *anchor) for mappings
+ *   - Merge keys (`<<: *anchor`) for mappings
  *
  * Usage Example:
  * @code
@@ -39,252 +40,153 @@
 #include <charconv>
 #include <algorithm>
 
-/**
- * @namespace YAML
- * @brief Namespace containing all YAML parser types and functions.
- */
 namespace YAML {
 
 /**
  * @class Node
- * @brief Represents a YAML node (Null, Bool, Int, Double, String, Sequence, or Mapping).
+ * @brief Represents any YAML node: Null, Bool, Int, Double, String, Sequence, or Mapping.
  *
- * A YAML node is a tagged variant and can hold:
- *   - Null
- *   - Boolean
- *   - Integer (int64_t)
- *   - Double
- *   - String
- *   - Sequence (std::vector<Node>)
- *   - Mapping (std::map<std::string, Node>)
- *
- * Provides type-safe accessors, introspection, and operator overloads for sequence/mapping access.
+ * This is the primary data structure used to represent all values loaded from YAML files.
+ * Each YAML node (mapping, sequence, scalar) is dynamically typed at runtime.
  */
 class Node {
 public:
-    /**
-     * @enum Kind
-     * @brief Enumeration of all YAML node types.
-     */
-    enum class Kind { Null, Bool, Int, Double, String, Sequence, Mapping };
+    /** Enumeration of node kinds. */
+    enum class Kind {
+        Null,      ///< Represents an explicit null value.
+        Bool,      ///< Boolean value (true/false).
+        Int,       ///< Integer value.
+        Double,    ///< Floating-point (double) value.
+        String,    ///< Text scalar value.
+        Sequence,  ///< Sequence (vector/list) of nodes.
+        Mapping    ///< Mapping (map/dictionary) of string-to-node.
+    };
 
-    /**
-     * @typedef Value
-     * @brief Variant type for storing any supported node value.
+    /** 
+     * @brief Type-erased value for this node.
+     * The variant stores the active value for this node, based on Kind.
      */
     using Value = std::variant<
-        std::monostate,            /**< Null */
-        bool,                      /**< Boolean */
-        int64_t,                   /**< Integer */
-        double,                    /**< Double */
-        std::string,               /**< String */
-        std::vector<Node>,         /**< Sequence */
-        std::map<std::string, Node>/**< Mapping */
+        std::monostate,            ///< Null type (empty).
+        bool,                      ///< Boolean type.
+        int64_t,                   ///< Integer type.
+        double,                    ///< Floating-point type.
+        std::string,               ///< String type.
+        std::vector<Node>,         ///< Sequence type.
+        std::map<std::string, Node>///< Mapping type.
     >;
 
-    /**
-     * @brief Default constructor. Initializes as Null.
-     */
+    /** @brief Construct a Null node by default. */
     Node() noexcept : kind_(Kind::Null), value_(std::monostate{}) {}
 
-    /**
-     * @brief Construct from a boolean value.
-     * @param b Boolean value.
-     */
+    /** @brief Construct a Bool node. */
     Node(bool b) noexcept : kind_(Kind::Bool), value_(b) {}
 
-    /**
-     * @brief Construct from an integer value.
-     * @param i Integer value.
-     */
+    /** @brief Construct an Int node. */
     Node(int64_t i) noexcept : kind_(Kind::Int), value_(i) {}
 
-    /**
-     * @brief Construct from a double value.
-     * @param d Double value.
-     */
+    /** @brief Construct a Double node. */
     Node(double d) noexcept : kind_(Kind::Double), value_(d) {}
 
-    /**
-     * @brief Construct from a std::string value.
-     * @param s String value.
-     */
+    /** @brief Construct a String node from std::string. */
     Node(std::string s) noexcept : kind_(Kind::String), value_(std::move(s)) {}
 
-    /**
-     * @brief Construct from a C-string value.
-     * @param s Null-terminated C-string.
-     */
+    /** @brief Construct a String node from a C-string. */
     Node(const char* s) : kind_(Kind::String), value_(std::string(s)) {}
 
-    /**
-     * @brief Construct from a vector (YAML sequence).
-     * @param seq Sequence of YAML nodes.
-     */
+    /** @brief Construct a Sequence node. */
     Node(std::vector<Node> seq) noexcept : kind_(Kind::Sequence), value_(std::move(seq)) {}
 
-    /**
-     * @brief Construct from a map (YAML mapping).
-     * @param map Mapping of strings to YAML nodes.
-     */
+    /** @brief Construct a Mapping node. */
     Node(std::map<std::string, Node> map) noexcept : kind_(Kind::Mapping), value_(std::move(map)) {}
 
-    /**
-     * @brief Returns the type of this node.
-     * @return Kind of the node.
-     */
-    Kind Type() const noexcept { return kind_; }
+    /** @brief Returns the runtime kind (type) of this node. */
+    Kind Type()    const noexcept { return kind_; }
 
-    /**
-     * @brief Returns true if the node is Null.
-     * @return True if Null, false otherwise.
-     */
-    bool IsNull() const noexcept { return kind_ == Kind::Null; }
+    /** @brief Returns true if this node is Null. */
+    bool IsNull()  const noexcept { return kind_ == Kind::Null; }
 
-    /**
-     * @brief Returns true if the node is a scalar (Bool, Int, Double, or String).
-     * @return True if scalar, false otherwise.
-     */
-    bool IsScalar() const noexcept {
-        return kind_ == Kind::Bool
-            || kind_ == Kind::Int
-            || kind_ == Kind::Double
-            || kind_ == Kind::String;
-    }
+    /** @brief Returns true if this node is any scalar (bool, int, double, or string). */
+    bool IsScalar()const noexcept { return kind_ == Kind::Bool || kind_ == Kind::Int || kind_ == Kind::Double || kind_ == Kind::String; }
 
-    /**
-     * @brief Returns true if the node is a sequence (YAML array).
-     * @return True if sequence, false otherwise.
-     */
+    /** @brief Returns true if this node is a Sequence (YAML array/list). */
     bool IsSequence() const noexcept { return kind_ == Kind::Sequence; }
 
-    /**
-     * @brief Returns true if the node is a mapping (YAML dictionary).
-     * @return True if mapping, false otherwise.
-     */
-    bool IsMapping() const noexcept { return kind_ == Kind::Mapping; }
+    /** @brief Returns true if this node is a Mapping (YAML map/dictionary/object). */
+    bool IsMapping()  const noexcept { return kind_ == Kind::Mapping; }
 
-    /**
-     * @brief Returns the contained boolean value.
-     * @throws std::runtime_error if not a boolean node.
-     * @return Boolean value.
-     */
-    bool AsBool() const { return std::get<bool>(AssertKind(Kind::Bool)); }
+    /** @brief Return the value as bool. Throws on wrong type. */
+    bool AsBool()   const { return std::get<bool>(AssertKind(Kind::Bool)); }
 
-    /**
-     * @brief Returns the contained integer value.
-     * @throws std::runtime_error if not an integer node.
-     * @return Integer value.
-     */
+    /** @brief Return the value as int64_t. Throws on wrong type. */
     int64_t AsInt() const { return std::get<int64_t>(AssertKind(Kind::Int)); }
 
-    /**
-     * @brief Returns the contained double value.
-     * @throws std::runtime_error if not a double node.
-     * @return Double value.
-     */
+    /** @brief Return the value as double. Throws on wrong type. */
     double AsDouble() const { return std::get<double>(AssertKind(Kind::Double)); }
 
-    /**
-     * @brief Returns the contained string value.
-     * @throws std::runtime_error if not a string node.
-     * @return String value.
-     */
+    /** @brief Return the value as const std::string&. Throws on wrong type. */
     const std::string& AsString() const { return std::get<std::string>(AssertKind(Kind::String)); }
 
-    /**
-     * @brief Returns the contained sequence value.
-     * @throws std::runtime_error if not a sequence node.
-     * @return Sequence of nodes.
-     */
+    /** @brief Return the value as const std::vector<Node>&. Throws on wrong type. */
     const std::vector<Node>& AsSequence() const { return std::get<std::vector<Node>>(AssertKind(Kind::Sequence)); }
 
-    /**
-     * @brief Returns the contained mapping value.
-     * @throws std::runtime_error if not a mapping node.
-     * @return Mapping of string to node.
-     */
-    const std::map<std::string, Node>& AsMapping() const { return std::get<std::map<std::string, Node>>(AssertKind(Kind::Mapping)); }
+    /** @brief Return the value as const std::map<std::string, Node>&. Throws on wrong type. */
+    const std::map<std::string, Node>& AsMapping()  const { return std::get<std::map<std::string,Node>>(AssertKind(Kind::Mapping)); }
 
-    /**
-     * @brief Const mapping lookup operator.
-     * @param key The key to look up.
-     * @throws std::runtime_error if not a mapping, std::out_of_range if key not found.
-     * @return Const reference to value node.
-     */
+    /** @brief Access mapping node by key (const). Throws if not a mapping. */
     const Node& operator[](const std::string& key) const {
         return std::get<std::map<std::string, Node>>(AssertKind(Kind::Mapping)).at(key);
     }
 
-    /**
-     * @brief Mutable mapping lookup operator (inserts null if key missing).
-     * @param key The key to look up.
-     * @throws std::runtime_error if not a mapping.
-     * @return Reference to value node.
-     */
+    /** @brief Access mapping node by key (mutable). Throws if not a mapping. */
     Node& operator[](const std::string& key) {
         return std::get<std::map<std::string, Node>>(AssertKind(Kind::Mapping))[key];
     }
 
-    /**
-     * @brief Const sequence lookup operator.
-     * @param idx Index in sequence.
-     * @throws std::runtime_error if not a sequence, std::out_of_range if index invalid.
-     * @return Const reference to element node.
-     */
+    /** @brief Access sequence node by index (const). Throws if not a sequence. */
     const Node& operator[](size_t idx) const {
         return std::get<std::vector<Node>>(AssertKind(Kind::Sequence)).at(idx);
     }
 
-    /**
-     * @brief Mutable sequence lookup operator.
-     * @param idx Index in sequence.
-     * @throws std::runtime_error if not a sequence, std::out_of_range if index invalid.
-     * @return Reference to element node.
-     */
+    /** @brief Access sequence node by index (mutable). Throws if not a sequence. */
     Node& operator[](size_t idx) {
-        return std::get<std::vector<Node>>(AssertKind(Kind::Sequence))[idx];
+        return std::get<std::vector<Node>>(AssertKind(Kind::Sequence)).at(idx);
     }
 
     /**
-     * @brief Try to convert to type T, or return std::nullopt on type mismatch.
-     * @tparam T Target type (bool, int64_t, double, std::string)
-     * @return Optional value.
+     * @brief Try to convert the node value to a specific scalar type.
+     * @tparam T bool, int64_t, double, or std::string
+     * @return std::optional<T>: the converted value, or std::nullopt if not possible.
      */
     template<typename T>
     std::optional<T> TryAs() const;
 
 private:
     /**
-     * @brief Check that this node is of the expected kind.
-     * @param expected The expected Kind.
-     * @throws std::runtime_error if the kind does not match.
-     * @return Const reference to value.
+     * @brief Helper for runtime type-checking.
+     * Throws if the node's kind does not match the expected kind.
+     * @param expected The expected node Kind.
+     * @return Reference to the stored value (const).
      */
     const Value& AssertKind(Kind expected) const {
         if (kind_ != expected)
-            throw std::runtime_error("YAML::Node: type mismatch (expected " +
-                KindToStr(expected) + ", got " + KindToStr(kind_) + ")");
+            throw std::runtime_error("YAML::Node: type mismatch (expected " + KindToStr(expected) +
+                                     ", got " + KindToStr(kind_) + ")");
         return value_;
     }
-
     /**
-     * @brief Check that this node is of the expected kind (mutable).
-     * @param expected The expected Kind.
-     * @throws std::runtime_error if the kind does not match.
-     * @return Reference to value.
+     * @brief Mutable version of AssertKind for internal mutation.
      */
     Value& AssertKind(Kind expected) {
         if (kind_ != expected)
-            throw std::runtime_error("YAML::Node: type mismatch (expected " +
-                KindToStr(expected) + ", got " + KindToStr(kind_) + ")");
+            throw std::runtime_error("YAML::Node: type mismatch (expected " + KindToStr(expected) +
+                                     ", got " + KindToStr(kind_) + ")");
         return value_;
     }
-
     /**
-     * @brief Convert Kind to a string for error messages.
-     * @param k Node kind.
-     * @return String representation.
+     * @brief Convert a Kind enum value to a human-readable string.
+     * @param k The Kind value.
+     * @return String representation of Kind.
      */
     static std::string KindToStr(Kind k) {
         switch (k) {
@@ -299,24 +201,35 @@ private:
         return "Unknown";
     }
 
-    Kind kind_;   /**< The kind of this node. */
-    Value value_; /**< The value of this node. */
+    Kind   kind_;   ///< The current type of this node.
+    Value  value_;  ///< The value stored for this node.
 };
 
 /// @cond INTERNAL
-// Template specializations for TryAs for each scalar type.
+/**
+ * @brief Specialized TryAs for bool type.
+ */
 template<> inline std::optional<bool> Node::TryAs<bool>() const {
     if (kind_ == Kind::Bool) return std::get<bool>(value_);
     return std::nullopt;
 }
+/**
+ * @brief Specialized TryAs for int64_t type.
+ */
 template<> inline std::optional<int64_t> Node::TryAs<int64_t>() const {
     if (kind_ == Kind::Int) return std::get<int64_t>(value_);
     return std::nullopt;
 }
+/**
+ * @brief Specialized TryAs for double type.
+ */
 template<> inline std::optional<double> Node::TryAs<double>() const {
     if (kind_ == Kind::Double) return std::get<double>(value_);
     return std::nullopt;
 }
+/**
+ * @brief Specialized TryAs for std::string type.
+ */
 template<> inline std::optional<std::string> Node::TryAs<std::string>() const {
     if (kind_ == Kind::String) return std::get<std::string>(value_);
     return std::nullopt;
@@ -325,17 +238,18 @@ template<> inline std::optional<std::string> Node::TryAs<std::string>() const {
 
 /**
  * @class Parser
- * @brief Internal YAML parser. Use YAML::ParseString or YAML::ParseFile instead.
+ * @brief Core YAML parser: performs all parsing logic, anchor/alias/merge tracking, and document construction.
  *
- * Supports block style mapping and sequence, multi-line scalars, anchors, aliases, and merge keys.
+ * This is a single-use parsing engine: constructed on a YAML input, and used to produce a `Node` representing the document.
+ * Not thread-safe, but can be called concurrently on different documents/files.
  */
 class Parser {
 public:
     /**
-     * @brief Parse a YAML document from a string.
-     * @param input The YAML document as a string_view.
-     * @return The parsed root Node.
-     * @throws std::runtime_error on parse error.
+     * @brief Parse YAML from a string input and produce a root node.
+     * @param input The YAML text as a std::string_view.
+     * @return The parsed YAML as a Node.
+     * @throws std::runtime_error on malformed YAML or invalid structure.
      */
     static Node ParseString(std::string_view input) {
         Parser p(input);
@@ -345,23 +259,23 @@ public:
 private:
     /**
      * @struct LineInfo
-     * @brief Represents a single preprocessed YAML line.
+     * @brief Describes a logical, preprocessed YAML line: leading indentation, line content, and line number.
      *
-     * Stores indentation, content, and line number.
+     * This helps support indentation-based block parsing and more robust error messages.
      */
     struct LineInfo {
-        size_t indent;            /**< Number of leading spaces. */
-        std::string_view content; /**< Line content after indentation. */
-        size_t line_no;           /**< 1-based line number. */
+        size_t indent;            ///< Number of leading spaces for this line.
+        std::string_view content; ///< Content of line after indentation (no trailing newline).
+        size_t line_no;           ///< 1-based line number from source.
     };
 
-    std::vector<LineInfo> lines_;             /**< Non-empty, non-comment YAML lines. */
-    size_t cur_ = 0;                          /**< Current parse position (index in lines_). */
-    std::unordered_map<std::string, Node> anchors_; /**< Table of anchor names to Node values. */
+    std::vector<LineInfo> lines_;               ///< All meaningful YAML lines (not blank/comment).
+    size_t cur_ = 0;                            ///< Index into current line during parsing.
+    std::unordered_map<std::string, Node> anchors_; ///< Table of anchors defined in this document.
 
     /**
-     * @brief Constructor. Tokenizes input into preprocessed lines.
-     * @param input The YAML document.
+     * @brief Constructor: Preprocess YAML into non-comment, non-empty lines, recording indent and line numbers.
+     *        This enables easier block parsing and detailed error reporting.
      */
     Parser(std::string_view input) {
         size_t off = 0, ln = 1;
@@ -369,19 +283,19 @@ private:
             size_t e = input.find_first_of("\r\n", off);
             if (e == std::string_view::npos) e = input.size();
             auto raw = input.substr(off, e - off);
-            size_t sp = 0; while (sp < raw.size() && raw[sp] == ' ') ++sp;
+            size_t sp = 0; while (sp < raw.size() && raw[sp]==' ') ++sp;
             auto ct = raw.substr(sp);
             if (!ct.empty() && ct[0] != '#')
                 lines_.push_back({sp, ct, ln});
             off = (e == input.size()) ? input.size()
-                : (input[e]=='\r'&&e+1<input.size()&&input[e+1]=='\n' ? e+2 : e+1);
+                  : (input[e]=='\r' && e+1<input.size() && input[e+1]=='\n' ? e+2 : e+1);
             ++ln;
         }
     }
 
     /**
-     * @brief Parse an entire YAML document starting at the current line.
-     * @return The root Node.
+     * @brief Entry point: Parse the document starting from the first logical YAML line.
+     * @return Node representing the full YAML document (mapping, sequence, scalar).
      */
     Node ParseDocument() {
         if (lines_.empty()) return Node();
@@ -389,105 +303,137 @@ private:
     }
 
     /**
-     * @brief Parse a block at the specified indentation (mapping or sequence).
-     * @param base_indent Required indentation for block.
-     * @return Node representing the block.
+     * @brief Dispatch block parsing logic based on indentation and line contents.
+     *        Handles block-style, flow-style, and sequence nodes at the root or sub-blocks.
+     * @param base_indent The indentation level this block expects.
+     * @return The parsed YAML node for this block.
      */
     Node ParseBlock(size_t base_indent) {
-        return lines_[cur_].content.starts_with('-')
-             ? ParseSequence(base_indent)
-             : ParseMapping(base_indent);
+        auto& c = lines_[cur_].content;
+        if (c.starts_with('-')) {
+            // Block-style YAML sequence node (starts with '-').
+            return ParseSequence(base_indent);
+        } else if (c.starts_with('[')) {
+            // Flow-style YAML sequence node ([ ... ]).
+            auto close = c.find_last_of(']');
+            if (close != std::string::npos)
+                return ParseFlowSequence(c.substr(1, close - 1));
+            throw std::runtime_error("YAML: Unterminated flow sequence");
+        } else if (c.starts_with('{')) {
+            // Flow-style YAML mapping node ({ ... }).
+            auto close = c.find_last_of('}');
+            if (close != std::string::npos)
+                return ParseFlowMapping(c.substr(1, close - 1));
+            throw std::runtime_error("YAML: Unterminated flow mapping");
+        } else {
+            // Block-style YAML mapping node (typical object).
+            return ParseMapping(base_indent);
+        }
     }
 
     /**
-     * @brief Extract an anchor marker (&name) if present.
-     * @param s Line segment.
-     * @return Pair: anchor name (empty if none), and remainder of string.
+     * @brief Parse any anchor (&anchor) in a line, returning anchor name and the remaining string.
+     * @param s The input string to search for an anchor in.
+     * @return {anchor name (or ""), rest of line after anchor}.
+     *
+     * If no anchor is present, returns {"", s}.
      */
-    static std::pair<std::string, std::string_view> parseAnchor(std::string_view s) {
+    static std::pair<std::string,std::string_view> parseAnchor(std::string_view s) {
         auto pos = s.find('&');
-        if (pos==std::string_view::npos) return {"",s};
+        if (pos == std::string_view::npos) return {"",s};
         size_t i = pos+1;
         while (i<s.size() && (std::isalnum((unsigned char)s[i])||s[i]=='_'||s[i]=='-')) ++i;
-        std::string name(s.substr(pos+1,i-(pos+1)));
-        std::string_view rest = (i<s.size()&&s[i]==' ')
-            ? s.substr(i+1) : s.substr(i);
+        std::string name(s.substr(pos+1, i-(pos+1)));
+        std::string_view rest = (i<s.size()&&s[i]==' ') ? s.substr(i+1) : s.substr(i);
         return {name,rest};
     }
 
     /**
-     * @brief Extract an alias marker (*name) if present.
-     * @param s Line segment.
-     * @return Pair: alias name (empty if none), and boolean if found.
+     * @brief Parse any alias (*alias) in a line, returning alias name and success flag.
+     * @param s The input string to search for an alias in.
+     * @return {alias name (or ""), whether an alias was found}.
+     *
+     * If no alias is present, returns {"", false}.
      */
-    static std::pair<std::string, bool> parseAlias(std::string_view s) {
+    static std::pair<std::string,bool> parseAlias(std::string_view s) {
         auto pos = s.find('*');
-        if (pos==std::string_view::npos) return {"",false};
+        if (pos == std::string_view::npos) return {"",false};
         size_t i = pos+1;
         while (i<s.size() && (std::isalnum((unsigned char)s[i])||s[i]=='_'||s[i]=='-')) ++i;
-        return {std::string(s.substr(pos+1,i-(pos+1))), true};
+        return {std::string(s.substr(pos+1, i-(pos+1))), true};
     }
 
     /**
-     * @brief Parse a YAML mapping (dictionary/object) block at the current indentation.
-     *        Registers anchors after parsing each value; supports aliases, merge keys, multi-line scalars.
-     * @param base_indent Required indentation for this block.
-     * @return Mapping node.
+     * @brief Parse a block-style YAML mapping (dictionary/object) at a given indent.
+     *
+     * Handles anchors, aliases, merge keys (<<: *anchor), and both block/flow-style values.
+     *
+     * @param base_indent The indentation level expected for this mapping block.
+     * @return A Node of kind Mapping with all keys/values parsed.
      */
     Node ParseMapping(size_t base_indent) {
         std::map<std::string,Node> m;
-        while (cur_<lines_.size() && lines_[cur_].indent>=base_indent) {
-            auto &li = lines_[cur_];
-            auto col = li.content.find(':');
-            if (col==std::string_view::npos)
+        while (cur_ < lines_.size() && lines_[cur_].indent >= base_indent) {
+            auto& li = lines_[cur_];
+            auto pos = li.content.find(':');
+            if (pos == std::string::npos)
                 throw std::runtime_error("YAML: missing ':' at line "+std::to_string(li.line_no));
-            // Key + key-anchor
-            auto kv = Trim(li.content.substr(0,col));
-            auto [kanchor,kbase] = parseAnchor(kv);
+            // Parse key and possible key anchor
+            auto keyv = Trim(li.content.substr(0,pos));
+            auto [kanchor, kbase] = parseAnchor(keyv);
             std::string key(kbase);
-            // Remainder + value-anchor
-            auto rest = li.content.substr(col+1);
-            size_t sp=0; while (sp<rest.size()&&rest[sp]==' ') ++sp;
+            // Parse possible anchor/value for this value
+            auto rest = li.content.substr(pos+1);
+            size_t sp=0; while(sp<rest.size()&&rest[sp]==' ')++sp;
             rest = rest.substr(sp);
-            auto [vanchor,vrem] = parseAnchor(rest);
+            auto [vanchor, vrem] = parseAnchor(rest);
             std::string val_anchor = vanchor;
             std::string_view content = vrem;
 
             Node val;
-            // Multi-line scalar
-            if (content=="|"||content==">") {
+            // Case 1: Multi-line scalar value (| or >) as value
+            if (content == "|" || content == ">") {
                 char t = content[0]; ++cur_;
-                val = ParseMultilineScalar(li.indent+2,t);
+                val = ParseMultilineScalar(li.indent+2, t);
             }
-            // Alias or merge
-            else if (auto [al, ia] = parseAlias(content); ia) {
-                if (!anchors_.count(al))
-                    throw std::runtime_error("YAML: undefined alias '*"+al+"' at line "+std::to_string(li.line_no));
-                val = anchors_[al];
+            // Case 2: Alias or merge key
+            else if (auto [a, ia] = parseAlias(content); ia) {
+                if (!anchors_.count(a))
+                    throw std::runtime_error("YAML: undefined alias '*"+a+"' at line "+std::to_string(li.line_no));
+                val = anchors_[a];
                 if (key=="<<") {
+                    // Merge mapping into current map
                     if (!val.IsMapping())
-                        throw std::runtime_error("YAML: merge key '*"+al+"' not mapping at line "+std::to_string(li.line_no));
-                    for (auto &kv2: val.AsMapping()) m.insert(kv2);
-                    ++cur_;
-                    continue;
+                        throw std::runtime_error("YAML: merge key '*"+a+"' not mapping");
+                    for(auto& kv: val.AsMapping()) m.insert(kv);
+                    ++cur_; continue;
                 }
                 ++cur_;
             }
-            // Nested block or null
+            // Case 3: Flow-style mapping or sequence as value
+            else if (content.starts_with('{')) {
+                val = ParseFlowMapping(content.substr(1, content.size()-2));
+                ++cur_;
+            }
+            else if (content.starts_with('[')) {
+                val = ParseFlowSequence(content.substr(1, content.size()-2));
+                ++cur_;
+            }
+            // Case 4: Nested block mapping or empty/null value
             else if (content.empty()) {
                 ++cur_;
-                if (cur_<lines_.size()&&lines_[cur_].indent>li.indent)
+                if (cur_<lines_.size() && lines_[cur_].indent>li.indent)
                     val = ParseBlock(li.indent+2);
                 else
                     val = Node();
             }
-            // Plain scalar
+            // Case 5: Plain scalar value
             else {
                 ++cur_;
                 val = ParseScalar(content);
             }
 
-            // Register anchors now
+            // Anchor management: allow anchors on keys and values
             if (!kanchor.empty())   anchors_[kanchor]   = val;
             if (!val_anchor.empty()) anchors_[val_anchor] = val;
             m.emplace(std::move(key), std::move(val));
@@ -496,65 +442,84 @@ private:
     }
 
     /**
-     * @brief Parse a YAML sequence (list/array) block at the current indentation.
-     *        Supports anchors and aliases on elements.
-     * @param base_indent Required indentation for this block.
-     * @return Sequence node.
+     * @brief Parse a block-style YAML sequence (array/list) at a given indent.
+     *
+     * Handles anchors, aliases, multi-line and flow-style elements, and nested blocks.
+     *
+     * @param base_indent The indentation level expected for this sequence block.
+     * @return A Node of kind Sequence containing all parsed elements.
      */
     Node ParseSequence(size_t base_indent) {
         std::vector<Node> seq;
-        while (cur_<lines_.size()
-            && lines_[cur_].indent>=base_indent
-            && lines_[cur_].content.starts_with('-'))
+        while (cur_ < lines_.size() &&
+               lines_[cur_].indent >= base_indent &&
+               lines_[cur_].content.starts_with('-'))
         {
-            auto &li = lines_[cur_];
+            auto& li = lines_[cur_];
             auto rest = li.content.substr(1);
-            size_t sp=0; while (sp<rest.size()&&rest[sp]==' ') ++sp;
+            size_t sp=0; while(sp<rest.size()&&rest[sp]==' ')++sp;
             rest = rest.substr(sp);
-            auto [anchor,rem] = parseAnchor(rest);
+            auto [anchor, rem] = parseAnchor(rest);
             std::string elt_anchor = anchor;
             std::string_view content = rem;
 
             Node elt;
+            // Nested block sequence element
             if (content.empty()) {
                 ++cur_;
                 elt = ParseBlock(li.indent+2);
             }
-            else if (content=="|"||content==">") {
-                char t=content[0]; ++cur_;
-                elt = ParseMultilineScalar(li.indent+2,t);
+            // Multi-line scalar as element
+            else if (content == "|" || content == ">") {
+                char t = content[0]; ++cur_;
+                elt = ParseMultilineScalar(li.indent+2, t);
             }
-            else if (auto [al, ia] = parseAlias(content); ia) {
-                if (!anchors_.count(al))
-                    throw std::runtime_error("YAML: undefined alias '*"+al+"' in sequence at line "+std::to_string(li.line_no));
-                elt = anchors_[al];
+            // Alias reference as element
+            else if (auto [a, ia] = parseAlias(content); ia) {
+                if (!anchors_.count(a))
+                    throw std::runtime_error("YAML: undefined alias '*"+a+"' in sequence");
+                elt = anchors_[a];
                 ++cur_;
             }
+            // Flow-style mapping or sequence as element
+            else if (content.starts_with('{')) {
+                elt = ParseFlowMapping(content.substr(1, content.size()-2));
+                ++cur_;
+            }
+            else if (content.starts_with('[')) {
+                elt = ParseFlowSequence(content.substr(1, content.size()-2));
+                ++cur_;
+            }
+            // Scalar element
             else {
                 ++cur_;
                 elt = ParseScalar(content);
             }
-            if (!elt_anchor.empty())
-                anchors_[elt_anchor] = elt;
+
+            // Store anchors for sequence elements, if present
+            if (!elt_anchor.empty()) anchors_[elt_anchor] = elt;
             seq.push_back(std::move(elt));
         }
         return Node(std::move(seq));
     }
 
     /**
-     * @brief Parse a YAML multi-line scalar block (literal '|' or folded '>').
-     * @param indent Indentation level for this scalar.
+     * @brief Parse a YAML multi-line scalar value, either as a literal (|) or folded (>).
+     *
+     * This reads lines at the given indent or greater, preserving line breaks as specified by YAML.
+     *
+     * @param indent Required indentation for each line of the scalar block.
      * @param type '|' for literal, '>' for folded.
-     * @return Node containing the parsed string.
+     * @return A Node of kind String containing the full multi-line value.
      */
     Node ParseMultilineScalar(size_t indent, char type) {
         std::string out;
-        bool first=true;
-        while (cur_<lines_.size() && lines_[cur_].indent>=indent) {
+        bool first = true;
+        while (cur_ < lines_.size() && lines_[cur_].indent >= indent) {
             auto line = lines_[cur_].content;
             if (!first) {
-                if (type=='|') out.push_back('\n');
-                else           out.push_back(line.empty()?'\n':' ');
+                if (type=='|') out.push_back('\n'); // Literal: preserve newlines
+                else            out.push_back(line.empty()?'\n':' '); // Folded: wrap unless blank
             }
             out += line;
             first = false;
@@ -564,59 +529,144 @@ private:
     }
 
     /**
-     * @brief Parse a single-line scalar value.
-     *        Handles null, bool, int, double, quoted, and plain strings.
-     * @param s String to parse.
-     * @return Scalar node.
+     * @brief Parse a single-line YAML scalar, which may be null, bool, int, double, quoted, or plain.
+     *
+     * This function is robust to YAML’s flexible scalar syntax.
+     * @param s The string to parse as a scalar.
+     * @return A Node of scalar kind (Null, Bool, Int, Double, or String).
      */
     static Node ParseScalar(std::string_view s) {
-        if (s=="~"||s=="null"||s=="Null"||s=="NULL") return Node();
-        if (s=="true"||s=="True"||s=="TRUE")       return Node(true);
-        if (s=="false"||s=="False"||s=="FALSE")    return Node(false);
+        // Null scalars (various YAML spellings)
+        if (s=="~"||s=="null"||s=="Null"||s=="NULL")     return Node();
+        // Boolean scalars (various spellings)
+        if (s=="true"||s=="True"||s=="TRUE")             return Node(true);
+        if (s=="false"||s=="False"||s=="FALSE")          return Node(false);
+        // Integer scalar
         int64_t i=0;
-        if (auto [p,ec]=std::from_chars(s.data(),s.data()+s.size(),i);
-            ec==std::errc() && p==s.data()+s.size()) return Node(i);
+        if (auto [p,ec] = std::from_chars(s.data(),s.data()+s.size(),i);
+            ec==std::errc() && p==s.data()+s.size())
+            return Node(i);
+        // Double scalar
         double d=0;
-        if (auto [p2,ec2]=std::from_chars(s.data(),s.data()+s.size(),d);
-            ec2==std::errc() && p2==s.data()+s.size()) return Node(d);
-        if ((s.starts_with('"')&&s.ends_with('"')) ||
-            (s.starts_with('\'')&&s.ends_with('\'')))
+        if (auto [p2,ec2] = std::from_chars(s.data(),s.data()+s.size(),d);
+            ec2==std::errc() && p2==s.data()+s.size())
+            return Node(d);
+        // Quoted string (single or double)
+        if ((s.starts_with('"') && s.ends_with('"')) ||
+            (s.starts_with('\'') && s.ends_with('\'')))
             return Node(std::string(s.substr(1,s.size()-2)));
+        // Default: plain string
         return Node(std::string(s));
     }
 
     /**
-     * @brief Trim whitespace from both ends of a string_view.
-     * @param s String to trim.
+     * @brief Trim whitespace from both the left and right ends of a string_view.
+     *        Used for robust parsing of keys, values, and elements.
+     * @param s Input string_view.
      * @return Trimmed string_view.
      */
     static std::string_view Trim(std::string_view s) {
-        size_t b=0,e=s.size();
-        while(b<e && std::isspace((unsigned char)s[b])) ++b;
-        while(e>b && std::isspace((unsigned char)s[e-1])) --e;
-        return s.substr(b,e-b);
+        size_t b=0, e=s.size();
+        while (b<e && std::isspace((unsigned char)s[b])) ++b;
+        while (e>b && std::isspace((unsigned char)s[e-1])) --e;
+        return s.substr(b, e-b);
+    }
+
+    /**
+     * @brief Parse a YAML flow-style sequence ([a, b, c]).
+     *        Handles nesting, strings, numbers, and booleans.
+     * @param s Contents between [ and ] (not including brackets themselves).
+     * @return Node of kind Sequence.
+     */
+    static Node ParseFlowSequence(std::string_view s) {
+        std::vector<Node> seq;
+        size_t i = 0;
+        while (i < s.size()) {
+            while (i<s.size() && (std::isspace((unsigned char)s[i])||s[i]==',')) ++i;
+            if (i>=s.size() || s[i]==']') break;
+            size_t start=i, depth=0;
+            bool in_q=false; char qc=0;
+            while (i<s.size()) {
+                if (!in_q && (s[i]==','||s[i]==']')&&depth==0) break;
+                if (!in_q && (s[i]=='['||s[i]=='{')) ++depth;
+                else if (!in_q && (s[i]==']'||s[i]=='}')) --depth;
+                else if (s[i]=='\''||s[i]=='"') {
+                    if (!in_q) { in_q=true; qc=s[i]; }
+                    else if (in_q&&s[i]==qc) in_q=false;
+                }
+                ++i;
+            }
+            auto tok = Trim(s.substr(start,i-start));
+            if (tok.starts_with('['))
+                seq.push_back(ParseFlowSequence(tok.substr(1,tok.size()-2)));
+            else if (tok.starts_with('{'))
+                seq.push_back(ParseFlowMapping(tok.substr(1,tok.size()-2)));
+            else
+                seq.push_back(ParseScalar(tok));
+            while (i<s.size()&&(s[i]==','||std::isspace((unsigned char)s[i]))) ++i;
+        }
+        return Node(std::move(seq));
+    }
+
+    /**
+     * @brief Parse a YAML flow-style mapping ({foo: 1, bar: 2}).
+     *        Handles nested flow structures, booleans, numbers, and quoted strings.
+     * @param s Contents between { and } (not including braces themselves).
+     * @return Node of kind Mapping.
+     */
+    static Node ParseFlowMapping(std::string_view s) {
+        std::map<std::string,Node> map;
+        size_t i = 0;
+        while (i < s.size()) {
+            while (i<s.size()&&(std::isspace((unsigned char)s[i])||s[i]==',')) ++i;
+            if (i>=s.size()||s[i]=='}') break;
+            size_t start=i;
+            while (i<s.size()&&s[i]!=':'&&s[i]!='}') ++i;
+            if (i>=s.size()||s[i]=='}') break;
+            auto key = Trim(s.substr(start,i-start));
+            ++i; while (i<s.size()&&std::isspace((unsigned char)s[i])) ++i;
+            start=i; size_t depth=0; bool in_q=false; char qc=0;
+            while (i<s.size()) {
+                if (!in_q&&(s[i]==','||s[i]=='}')&&depth==0) break;
+                if (!in_q&&(s[i]=='['||s[i]=='{')) ++depth;
+                else if (!in_q&&(s[i]==']'||s[i]=='}')) --depth;
+                else if (s[i]=='\''||s[i]=='"') {
+                    if (!in_q) { in_q=true; qc=s[i]; }
+                    else if (in_q&&s[i]==qc) in_q=false;
+                }
+                ++i;
+            }
+            auto val = Trim(s.substr(start,i-start));
+            if (val.starts_with('['))
+                map[std::string(key)] = ParseFlowSequence(val.substr(1,val.size()-2));
+            else if (val.starts_with('{'))
+                map[std::string(key)] = ParseFlowMapping(val.substr(1,val.size()-2));
+            else
+                map[std::string(key)] = ParseScalar(val);
+            while (i<s.size()&&(s[i]==','||std::isspace((unsigned char)s[i]))) ++i;
+        }
+        return Node(std::move(map));
     }
 };
 
 /**
- * @brief Parse a YAML document from a string.
- * @param input YAML text as std::string_view.
- * @return Root node.
- * @throws std::runtime_error on parse error.
+ * @brief Shorthand for parsing a YAML document from a string.
+ * @param in The YAML input as a string_view.
+ * @return Parsed YAML root node.
  */
-inline Node ParseString(std::string_view input) {
-    return Parser::ParseString(input);
+inline Node ParseString(std::string_view in) {
+    return Parser::ParseString(in);
 }
 
 /**
- * @brief Parse a YAML document from a file.
- * @param filename Path to YAML file.
- * @return Root node.
- * @throws std::runtime_error if file cannot be opened or parsed.
+ * @brief Shorthand for parsing a YAML document directly from a file.
+ * @param fn The filename to open.
+ * @return Parsed YAML root node.
+ * @throws std::runtime_error if the file cannot be opened.
  */
-inline Node ParseFile(const std::string& filename) {
-    std::ifstream f(filename);
-    if (!f) throw std::runtime_error("YAML: cannot open file: "+filename);
+inline Node ParseFile(const std::string& fn) {
+    std::ifstream f(fn);
+    if (!f) throw std::runtime_error("YAML: cannot open file: "+fn);
     std::stringstream ss; ss<<f.rdbuf();
     return ParseString(ss.str());
 }
